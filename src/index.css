@@ -1,0 +1,23 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  }
+
+  body, html, #root {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    background-color: #0f172a;
+    user-select: none;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .font-mono-tabular {
+    font-family: 'JetBrains Mono', monospace;
+    font-variant-numeric: tabular-nums;
+  }
+}
