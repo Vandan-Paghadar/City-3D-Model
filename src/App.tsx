@@ -24,6 +24,11 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   AlertTriangle,
+  Siren,
+  Truck,
+  CheckCircle2,
+  ArrowLeft,
+  Send,
 } from 'lucide-react';
 import {
   SENSOR_CATEGORIES,
@@ -47,6 +52,21 @@ interface ScreenCoord {
   visible: boolean;
 }
 
+interface EmsUnit {
+  id: string;
+  name: string;
+  base: string;
+  type: 'Fire & Rescue' | 'Medical EMS' | 'Hazard & Civil';
+}
+
+const EMS_UNITS: EmsUnit[] = [
+  { id: 'unit-fire-1', name: 'Fire Engine Unit 01', base: 'Fire Station', type: 'Fire & Rescue' },
+  { id: 'unit-fire-2', name: 'Hazmat & Rescue Unit 02', base: 'Fire Station', type: 'Fire & Rescue' },
+  { id: 'unit-med-1', name: 'Ambulance Medic 01', base: 'Hospital', type: 'Medical EMS' },
+  { id: 'unit-med-2', name: 'Ambulance Medic 02', base: 'Hospital', type: 'Medical EMS' },
+  { id: 'unit-civil-1', name: 'Municipal Response Team', base: 'Control Center', type: 'Hazard & Civil' },
+];
+
 const SENSOR_ICON_COMPONENTS: Record<SensorType, React.FC<{ className?: string }>> = {
   earthquake: Activity,
   water: Droplets,
@@ -61,6 +81,10 @@ export default function App() {
   const [activeFilter, setActiveFilter] = useState<SensorType | 'all'>('all');
   const [selectedSensor, setSelectedSensor] = useState<SensorMarkerData | null>(null);
   const [activeCalamity, setActiveCalamity] = useState<CalamityType>('none');
+
+  // Hidden EMS Dashboard Page State & Dispatched Places Map (sensorId -> unitName)
+  const [showEmsDashboard, setShowEmsDashboard] = useState<boolean>(false);
+  const [dispatchedPlaces, setDispatchedPlaces] = useState<Record<string, string>>({});
 
   const [activePresetId, setActivePresetId] = useState<string>('overview');
   const [showLandmarkLabels, setShowLandmarkLabels] = useState<boolean>(true);
@@ -125,18 +149,37 @@ export default function App() {
   );
 
   // Trigger a calamity:
-  // - Only the related sensors remain visible in the 3D scene
-  // - No sensor names, no callout cards, no zone labels are displayed
-  // - The related 3D sensor pins glow and pulse brightly in the 3D scene
+  // - Only the related sensors remain visible in the 3D scene and glow
+  // - No sensor names or floating labels appear over the 3D scene
+  // - Shows the top EMS Alert banner so the user can open the hidden EMS Dashboard and send units
   const handleTriggerCalamity = useCallback((calamity: CalamityType) => {
     setActiveCalamity((prev) => {
       const next = prev === calamity ? 'none' : calamity;
-      if (next !== 'none') {
-        // Clear any open sensor name label so nothing blocks the glowing pins
-        setSelectedSensor(null);
+      setSelectedSensor(null);
+      setDispatchedPlaces({});
+      if (next === 'none') {
+        setShowEmsDashboard(false);
       }
       return next;
     });
+  }, []);
+
+  // Send an EMS unit to a specific place
+  const handleSendUnitToPlace = useCallback((sensorId: string, unitName: string) => {
+    setDispatchedPlaces((prev) => ({
+      ...prev,
+      [sensorId]: unitName,
+    }));
+  }, []);
+
+  // Dispatch all available units to all affected places at once
+  const handleDispatchAllUnits = useCallback((places: SensorMarkerData[]) => {
+    const next: Record<string, string> = {};
+    places.forEach((place, idx) => {
+      const unit = EMS_UNITS[idx % EMS_UNITS.length];
+      next[place.id] = unit.name;
+    });
+    setDispatchedPlaces(next);
   }, []);
 
   // Sync sensor pin visibility and glow state whenever calamity or filter changes
@@ -205,22 +248,25 @@ export default function App() {
     }
   }, [isNightMode]);
 
-  // Keyboard shortcuts: 'H' bottom dock, 'L' Smart City sidebar, 'Escape' clear
+  // Keyboard shortcuts: 'H' bottom dock, 'L' Smart City sidebar, 'E' hidden EMS dashboard, 'Escape' close
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'h' || e.key === 'H') {
         setDockCollapsed((prev) => !prev);
       } else if (e.key === 'l' || e.key === 'L') {
         setSidebarCollapsed((prev) => !prev);
+      } else if (e.key === 'e' || e.key === 'E') {
+        setShowEmsDashboard((prev) => !prev);
       } else if (e.key === 'Escape') {
-        if (showReferenceModal) setShowReferenceModal(false);
+        if (showEmsDashboard) setShowEmsDashboard(false);
+        else if (showReferenceModal) setShowReferenceModal(false);
         else if (activeCalamity !== 'none') setActiveCalamity('none');
         else setSelectedSensor(null);
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [showReferenceModal, activeCalamity]);
+  }, [showReferenceModal, activeCalamity, showEmsDashboard]);
 
   // Initialize Three.js Scene once inside stable mount ref
   useEffect(() => {
@@ -340,7 +386,6 @@ export default function App() {
     };
 
     const onPointerUp = (e: PointerEvent) => {
-      // During a calamity, do not open any text label
       if (activeCalamityRef.current !== 'none') return;
 
       const moveDist = Math.hypot(e.clientX - pointerDownPos.x, e.clientY - pointerDownPos.y);
@@ -442,7 +487,6 @@ export default function App() {
       const dt = Math.min(clock.getDelta(), 0.1);
       const elapsed = clock.getElapsedTime();
 
-      // Smooth damped camera flight if preset was triggered
       if (flyTransitionRef.current.active) {
         const lambda = 5.5;
         camera.position.x = THREE.MathUtils.damp(camera.position.x, _camGoalPos.x, lambda, dt);
@@ -525,15 +569,12 @@ export default function App() {
             const beaconRing = pinGroup.userData.beaconRing as THREE.Mesh;
             const beaconMat = pinGroup.userData.beaconMat as THREE.MeshBasicMaterial;
 
-            // Intense emissive glow pulse on the pin itself
             pinColorMat.emissiveIntensity = 0.8 + pulse * 1.6;
 
-            // Pulsing 3D glowing aura sphere around the pin head
             const haloScale = 1.0 + pulse * 0.45;
             glowHalo.scale.setScalar(haloScale);
             haloMat.opacity = 0.28 + pulse * 0.42;
 
-            // Expanding ground shockwave ring
             const ringScale = 0.8 + ringPhase * 2.2;
             beaconRing.scale.setScalar(ringScale);
             beaconMat.opacity = (1.0 - ringPhase) * 0.85;
@@ -541,14 +582,12 @@ export default function App() {
         });
       }
 
-      // Clarifier scraper arms rotation
       for (const arm of builtCity.animatedObjects.clarifierBridges) {
         arm.rotation.y = elapsed * 0.25;
       }
 
       renderer.render(scene, camera);
 
-      // Update projected 2D screen coordinates only when no calamity is active
       const now = performance.now();
       if (calamity === 'none' && now - lastOverlaySync > 45) {
         lastOverlaySync = now;
@@ -623,15 +662,46 @@ export default function App() {
     return counts;
   }, []);
 
+  // Places affected by the active calamity (for the EMS Dispatch Dashboard)
+  const affectedPlaces = useMemo(() => {
+    const targetType = activeCalamity !== 'none' ? activeCalamity : 'earthquake';
+    return SENSOR_MARKERS.filter((s) => s.type === targetType);
+  }, [activeCalamity]);
+
+  const dispatchedCount = Object.keys(dispatchedPlaces).length;
+
   return (
     <div className="relative w-screen h-screen overflow-hidden bg-slate-950 select-none">
       {/* Dedicated WebGL Canvas Container */}
       <div ref={canvasMountRef} className="absolute inset-0 w-full h-full" />
 
       {/* =====================================================================
-          3D WORLD-ANCHORED LANDMARK LABELS (Hidden during calamity so only glowing sensors show)
+          TOP-CENTER EMS ALERT TOAST WHEN A CALAMITY IS TRIGGERED
       ====================================================================== */}
-      {showLandmarkLabels && activeCalamity === 'none' && (
+      {activeCalamity !== 'none' && !showEmsDashboard && (
+        <div
+          style={{ left: '50%', transform: 'translateX(-50%)' }}
+          className="fixed top-4 z-20 pointer-events-auto flex items-center gap-3 px-4 py-2.5 rounded-xl bg-red-950/95 border border-red-500/80 text-white shadow-2xl"
+        >
+          <Siren className="w-4 h-4 text-red-400 shrink-0" />
+          <div className="text-xs font-semibold whitespace-nowrap">
+            EMS Alert: {CALAMITY_SCENARIOS[activeCalamity].shortLabel} Detected
+            {dispatchedCount > 0 && ` (${dispatchedCount} Units Dispatched)`}
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowEmsDashboard(true)}
+            className="px-3 py-1 rounded-lg bg-red-600 hover:bg-red-500 text-white text-xs font-semibold transition-colors whitespace-nowrap"
+          >
+            Open EMS Dashboard
+          </button>
+        </div>
+      )}
+
+      {/* =====================================================================
+          3D WORLD-ANCHORED LANDMARK LABELS (Hidden during calamity)
+      ====================================================================== */}
+      {showLandmarkLabels && activeCalamity === 'none' && !showEmsDashboard && (
         <div className="absolute inset-0 pointer-events-none overflow-hidden z-10">
           {CITY_LANDMARKS.map((lm) => {
             const coord = landmarkScreenMap[lm.id];
@@ -658,7 +728,7 @@ export default function App() {
       {/* =====================================================================
           CLICKED SENSOR FLOATING LABEL (Only in Normal Mode; hidden during calamity)
       ====================================================================== */}
-      {activeCalamity === 'none' && selectedSensor && selectedScreenPos.visible && (
+      {activeCalamity === 'none' && !showEmsDashboard && selectedSensor && selectedScreenPos.visible && (
         <div
           style={{
             transform: `translate3d(${Math.round(selectedScreenPos.x)}px, ${Math.round(
@@ -855,7 +925,6 @@ export default function App() {
         }}
         className="fixed z-20 w-full pointer-events-auto flex flex-col items-center"
       >
-        {/* Collapse / Expand Toggle Tab */}
         <button
           type="button"
           onClick={() => setDockCollapsed((prev) => !prev)}
@@ -874,7 +943,6 @@ export default function App() {
           )}
         </button>
 
-        {/* Main Control Bar */}
         {!dockCollapsed && (
           <div className="w-full rounded-xl bg-slate-900/95 border border-slate-700/90 px-4 py-3 text-white shadow-2xl flex flex-col gap-2.5">
             {/* Row 1: Camera Zone Presets + Scene Toggles */}
@@ -958,6 +1026,7 @@ export default function App() {
                     setActiveFilter('all');
                     setActiveCalamity('none');
                     setSelectedSensor(null);
+                    setDispatchedPlaces({});
                   }}
                   title="Reset Camera, Filters & Calamity"
                   className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium flex items-center gap-1 transition-colors whitespace-nowrap"
@@ -968,7 +1037,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* Row 2: Calamity Trigger Buttons (Only shows & glows the related 3D sensors, zero text labels) */}
+            {/* Row 2: Calamity Trigger Buttons + Hidden EMS Dashboard Access */}
             <div className="pt-2 border-t border-slate-800 flex items-center justify-between gap-2 overflow-x-auto">
               <div className="flex items-center gap-1.5 shrink-0">
                 <span className="text-xs font-semibold text-amber-400 flex items-center gap-1.5 mr-1">
@@ -1001,17 +1070,197 @@ export default function App() {
                 {activeCalamity !== 'none' && (
                   <button
                     type="button"
-                    onClick={() => setActiveCalamity('none')}
+                    onClick={() => {
+                      setActiveCalamity('none');
+                      setDispatchedPlaces({});
+                    }}
                     className="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors whitespace-nowrap shrink-0"
                   >
                     Stop Calamity
                   </button>
                 )}
               </div>
+
+              {/* Hidden EMS Page Toggle Button */}
+              <button
+                type="button"
+                onClick={() => setShowEmsDashboard(true)}
+                title="Open Emergency Services (EMS) Dispatch Page (Shortcut: E)"
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${
+                  activeCalamity !== 'none'
+                    ? 'bg-red-600 hover:bg-red-500 text-white'
+                    : 'bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white'
+                }`}
+              >
+                <Siren className="w-3.5 h-3.5" />
+                <span>EMS Dashboard</span>
+              </button>
             </div>
           </div>
         )}
       </div>
+
+      {/* =====================================================================
+          HIDDEN PAGE: SIMPLE EMERGENCY SERVICES (EMS) DISPATCH DASHBOARD
+      ====================================================================== */}
+      {showEmsDashboard && (
+        <div className="fixed inset-0 z-30 bg-slate-950/95 text-white flex flex-col pointer-events-auto overflow-y-auto">
+          {/* Top Bar */}
+          <header className="flex items-center justify-between gap-4 px-6 py-4 border-b border-slate-800 bg-slate-900">
+            <div className="flex items-center gap-3">
+              <Siren className="w-5 h-5 text-red-500 shrink-0" />
+              <span className="text-base font-bold tracking-tight whitespace-nowrap">
+                Smart City Emergency Services (EMS) Dispatch
+              </span>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setShowEmsDashboard(false)}
+              className="px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-semibold text-white flex items-center gap-1.5 transition-colors whitespace-nowrap"
+            >
+              <ArrowLeft className="w-4 h-4" />
+              <span>Back to 3D City</span>
+            </button>
+          </header>
+
+          {/* Main Simple Dashboard Content */}
+          <main className="max-w-4xl w-full mx-auto px-6 py-6 flex flex-col gap-6">
+            {/* 1. Active Calamity Alert Banner */}
+            <div
+              className={`rounded-xl border p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${
+                activeCalamity !== 'none'
+                  ? 'bg-red-950/40 border-red-500/60'
+                  : 'bg-slate-900 border-slate-800'
+              }`}
+            >
+              <div>
+                <div className="text-xs font-mono-tabular text-slate-400">
+                  {activeCalamity !== 'none' ? 'EMERGENCY ALERT ACTIVE' : 'SYSTEM STANDBY'}
+                </div>
+                <h2 className="text-lg font-bold text-white mt-0.5">
+                  {activeCalamity !== 'none'
+                    ? `${CALAMITY_SCENARIOS[activeCalamity].label} — Sensors Triggered`
+                    : 'No Active Calamity — Select a Scenario to Test Dispatch'}
+                </h2>
+                <p className="text-xs text-slate-300 mt-1">
+                  {activeCalamity !== 'none'
+                    ? `${affectedPlaces.length} sensors reporting emergency conditions. Send EMS & Fire units to the affected places below.`
+                    : 'Trigger a calamity below or from the 3D city to dispatch emergency units.'}
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                {activeCalamity === 'none' ? (
+                  <button
+                    type="button"
+                    onClick={() => handleTriggerCalamity('earthquake')}
+                    className="px-3.5 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold transition-colors whitespace-nowrap"
+                  >
+                    Simulate Earthquake Alert
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => handleDispatchAllUnits(affectedPlaces)}
+                    className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-500 text-white text-xs font-semibold flex items-center gap-1.5 transition-colors whitespace-nowrap"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    <span>Send Units to All Places</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* 2. Affected Places & "Send Unit" Dispatch Table */}
+            <div className="rounded-xl border border-slate-800 bg-slate-900 overflow-hidden">
+              <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-white">
+                  Affected Places & Unit Dispatch
+                </h3>
+                <span className="text-xs font-mono-tabular text-slate-400">
+                  {dispatchedCount} of {affectedPlaces.length} places covered
+                </span>
+              </div>
+
+              <div className="divide-y divide-slate-800">
+                {affectedPlaces.map((place, index) => {
+                  const assignedUnit = dispatchedPlaces[place.id];
+                  const defaultUnit = EMS_UNITS[index % EMS_UNITS.length];
+                  return (
+                    <div
+                      key={place.id}
+                      className="px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-800/40 transition-colors"
+                    >
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-mono-tabular font-semibold text-amber-400">
+                            {place.code}
+                          </span>
+                          <span className="text-sm font-semibold text-white">
+                            {place.zone} — {place.name}
+                          </span>
+                        </div>
+                        <div className="text-xs text-slate-400 mt-0.5">
+                          Location: {place.mountType} · Sensor Alert: {place.calamityReading}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2.5 shrink-0">
+                        {assignedUnit ? (
+                          <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-emerald-950/60 border border-emerald-500/50 text-emerald-300 text-xs font-medium">
+                            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                            <span>{assignedUnit} Sent</span>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleSendUnitToPlace(place.id, defaultUnit.name)}
+                            className="px-3.5 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold flex items-center gap-1.5 transition-colors whitespace-nowrap"
+                          >
+                            <Truck className="w-3.5 h-3.5" />
+                            <span>Send {defaultUnit.name}</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* 3. Available Emergency Units Summary */}
+            <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
+              <h3 className="text-sm font-semibold text-white mb-3">
+                Emergency Response Units (Hospital, Fire Station & Control Center)
+              </h3>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                {EMS_UNITS.slice(0, 3).map((u) => {
+                  const isAssigned = Object.values(dispatchedPlaces).includes(u.name);
+                  return (
+                    <div
+                      key={u.id}
+                      className="p-3 rounded-lg bg-slate-950 border border-slate-800 flex items-center justify-between gap-2"
+                    >
+                      <div className="min-w-0">
+                        <div className="text-xs font-semibold text-white truncate">{u.name}</div>
+                        <div className="text-[11px] text-slate-400">Base: {u.base}</div>
+                      </div>
+                      <span
+                        className={`text-[11px] font-mono-tabular font-semibold shrink-0 ${
+                          isAssigned ? 'text-emerald-400' : 'text-slate-400'
+                        }`}
+                      >
+                        {isAssigned ? 'EN ROUTE' : 'READY'}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </main>
+        </div>
+      )}
 
       {/* =====================================================================
           REFERENCE BLUEPRINT MODAL
